@@ -1,59 +1,44 @@
 class WebhookController < ApplicationController
-	protect_from_forgery :except => [:callback]
+  protect_from_forgery with: :null_session
 
-require 'line/bot'
-require 'net/http'
+  CHANNEL_SECRET = ENV['CHANNEL_SECRET']
+  OUTBOUND_PROXY = ENV['OUTBOUND_PROXY']
+  CHANNEL_ACCESS_TOKEN = ENV['CHANNEL_ACCESS_TOKEN']
 
-def client
-       client = Line::Bot::Client.new { |config|
- config.channel_secret = 'd50626679011381d5c6cd25b51084391'
- config.channel_access_token = 'v6sPjJ8jIb3x1LGrhJn10oUXigLtgbyOHl7Ic8Nvvgh4UwlrmgzwBXb70cjK0jvg+tnPqdvCVM1vjsgtDmnOuyU+E/Vt6uaNnN9VhvyO4bqOIdGbIBc/41+UomAo/6MOzo2iu804SgPLr8P+9G/XggdB04t89/1O/w1cDnyilFU='
- }
-end
+  def callback
+    unless is_validate_signature
+      render :nothing => true, status: 470
+    end
 
+    event = params["events"][0]
+    event_type = event["type"]
+    replyToken = event["replyToken"]
 
+    case event_type
+    when "message"
+      input_text = event["message"]["text"]
+      output_text = input_text
+    end
 
-def callback
+    client = LineClient.new(CHANNEL_ACCESS_TOKEN, OUTBOUND_PROXY)
+    res = client.reply(replyToken, output_text)
 
-  body = request.body.read
+    if res.status == 200
+      logger.info({success: res})
+    else
+      logger.info({fail: res})
+    end
 
-  signature = request.env['HTTP_X_LINE_SIGNATURE']
+    render :nothing => true, status: :ok
+  end
 
-  event = params["events"][0]
-  event_type = event["type"]
-
-  #送られたテキストメッセージをinput_textに取得
-  input_text = event["message"]["text"]
-
-  events = client.parse_events_from(body)
-
-  events.each { |event|
-
-    case event
-      when Line::Bot::Event::Message
-        case event.type
-          #テキストメッセージが送られた場合、そのままおうむ返しする
-          when Line::Bot::Event::MessageType::Text
-             message = {
-                  type: 'text',
-                  text: input_text
-                  }
-
-          #画像が送られた場合、適当な画像を送り返す
-          #画像を返すには、画像が保存されたURLを指定する。
-          #なお、おうむ返しするには、１度AWSなど外部に保存する必要がある。ここでは割愛する
-          when Line::Bot::Event::MessageType::Image
-            image_url = "https://XXXXXXXXXX/XXX.jpg"  #httpsであること
-              message = {
-                  type: "image",
-                  originalContentUrl: image_url,
-                  previewImageUrl: image_url
-                  }
-         end #event.type
-         #メッセージを返す
-         client.reply_message(event['replyToken'],message)
-    end #event
- } #events.each
-
-end  #def
+  private
+  # verify access from LINE
+  def is_validate_signature
+    signature = request.headers["X-LINE-Signature"]
+    http_request_body = request.raw_post
+    hash = OpenSSL::HMAC::digest(OpenSSL::Digest::SHA256.new, CHANNEL_SECRET, http_request_body)
+    signature_answer = Base64.strict_encode64(hash)
+    signature == signature_answer
+  end
 end
